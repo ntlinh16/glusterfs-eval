@@ -1,0 +1,44 @@
+---
+#########################
+#                       #
+#     Infrastructures   #
+#                       #
+#########################
+
+# your authorization information
+endpoint: <your_endpoint>
+application_key: <your_application_key>
+application_secret: <your_application_secret> 
+consumer_key: <your_consumer_key> 
+project_id: <your_project_id> 
+
+instance_type: b2-7
+# The Flex option opts for 50 GB storage, providing faster snapshots and the ability to downgrade later on.
+flexible_instance: False
+image: Debian 11
+
+#################################
+#                               #
+#     Experiment Parameters     #
+#                               #
+#################################
+parameters:
+    # the number of repetitions of each experiment
+    iteration: [1..10]
+    # the number of Gluster data nodes of one DC
+    n_gluster_per_dc: 3
+    benchmarks: filebench
+    
+
+#############################################
+#                                           #
+#     Experiment Environment Settings       #
+#                                           #
+#############################################
+exp_env:
+    # the path to th results directory
+    results_dir: glusterfs-eval/results
+    # The region code name on OVHCloud that you want to deploy glusterd data centers.
+    clusters: [BHS5]
+
+
