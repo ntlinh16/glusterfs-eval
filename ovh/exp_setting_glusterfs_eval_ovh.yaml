@@ -23,11 +23,20 @@ image: Debian 11
 #                               #
 #################################
 parameters:
+    # describer here the list of different aspects that you want to examine in your experiment
+    # each aspect has a list of possible values to try,
+
     # the number of repetitions of each experiment
     iteration: [1..10]
-    # the number of Gluster data nodes of one DC
-    n_gluster_per_dc: 3
-    benchmarks: filebench
+
+    # the information for the workload
+    benchmarks: [mailserver, videoserver]
+    duration: 600
+    n_client: [1,2,3]
+
+    ### configuration of topology on 1 site (or Grid5k cluster)
+    # the number of GlusterFS nodes
+    n_nodes_per_dc: [3]
     
 
 #############################################

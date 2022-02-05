@@ -1,18 +1,16 @@
 import traceback
+import random
 
 from cloudal.utils import get_logger, execute_cmd, parse_config_file, ExecuteCommandException
 from cloudal.action import performing_actions
 from cloudal.provisioner import ovh_provisioner
-from cloudal.configurator import packages_configurator
+from cloudal.configurator import packages_configurator, CancelException
 from cloudal.experimenter import create_paramsweeper, define_parameters, get_results
 
 from execo_engine import slugify
 
 logger = get_logger()
 
-
-class CancelCombException(Exception):
-    pass
 
 
 class glusterfs_eval_ovh(performing_actions):
@@ -31,30 +29,54 @@ class glusterfs_eval_ovh(performing_actions):
 
     def save_results(self, comb, hosts):
         logger.info("----------------------------------")
-        logger.info("5. Starting dowloading the results")
+        logger.info("4. Starting dowloading the results")
         get_results(comb=comb,
-                               hosts=hosts,
-                               remote_result_files=['/tmp/results/*'],
-                               local_result_dir=self.configs['exp_env']['results_dir'])
+                    hosts=hosts,
+                    remote_result_files=['/tmp/results/*'],
+                    local_result_dir=self.configs['exp_env']['results_dir'])
 
-    def run_filebench(self, hosts):
-        logger.info("Dowloading Filebench configuration file")
-        cmd = "wget https://raw.githubusercontent.com/filebench/filebench/master/workloads/varmail.f -P /tmp/ -N"
-        execute_cmd(cmd, hosts[0])
+    def run_mailserver(self, gluster_hosts, duration, n_client):
+        if n_client == 100:
+            n_hosts = 1
+        else:
+            n_hosts = n_client
+
+        hosts = random.sample(gluster_hosts, n_hosts)
+        logger.info('Dowloading Filebench configuration file')
+        cmd = 'wget https://raw.githubusercontent.com/filebench/filebench/master/workloads/varmail.f -P /tmp/ -N'
+        execute_cmd(cmd, hosts)
+
         logger.info('Editing the configuration file')
-        cmd = 'sed -i "s/tmp/mnt\/glusterd-$(hostname)/g" /tmp/varmail.f'
-        execute_cmd(cmd, hosts[0])
-        logger.info('Starting filebench')
-        cmd = "setarch $(arch) -R filebench -f /tmp/varmail.f > /tmp/results/filebench_$(hostname)"
-        execute_cmd(cmd, hosts[0])
-        return True
+        cmd = 'sed -i "s/tmp/tmp\/dc-$(hostname)/g" /tmp/varmail.f'
+        execute_cmd(cmd, hosts)
+        cmd = 'sed -i "s/run 60/run %s/g" /tmp/varmail.f' % duration
+        execute_cmd(cmd, hosts)
+        cmd = 'sed -i "s/name=bigfileset/name=bigfileset-$(hostname)/g" /tmp/varmail.f'
+        execute_cmd(cmd, hosts)
+        cmd = 'sed -i "s/meandirwidth=1000000/meandirwidth=1000/g" /tmp/varmail.f'
+        execute_cmd(cmd, hosts)
+        if n_client != 100:
+            cmd = 'sed -i "s/nthreads=16/nthreads=32/g" /tmp/varmail.f'
+            execute_cmd(cmd, hosts)
+
+        logger.info('Clearing cache ')
+        cmd = 'rm -rf /tmp/dc-$(hostname)/bigfileset'
+        execute_cmd(cmd, hosts)
+        cmd = 'sync; echo 3 > /proc/sys/vm/drop_caches'
+        execute_cmd(cmd, hosts)
+
+        logger.info('hosts = %s' % hosts)
+        logger.info('Running filebench in %s second' % duration)
+        cmd = 'setarch $(arch) -R filebench -f /tmp/varmail.f > /tmp/results/filebench_$(hostname)'
+        execute_cmd(cmd, hosts)
+        return True, hosts
 
     def run_benchmark(self, comb, glusterfs_hosts):
         benchmark = comb['benchmarks']
         logger.info('--------------------------------------')
         logger.info("3. Starting benchmark: %s" % benchmark)
-        if benchmark == "filebench":
-            return self.run_filebench(glusterfs_hosts)
+        if benchmark == "mailserver":
+            return self.run_mailserver(glusterfs_hosts, comb['duration'], comb['n_client'])
 
     def deploy_glusterfs(self, hosts, gluster_volume_name):
         logger.info('--------------------------------------')
@@ -126,8 +148,8 @@ class glusterfs_eval_ovh(performing_actions):
                     comb_ok = True
                     self.save_results(comb, self.data_hosts)
             else:
-                raise CancelCombException("Cannot deploy glusterfs")
-        except (ExecuteCommandException, CancelCombException) as e:
+                raise CancelException("Cannot deploy glusterfs")
+        except (ExecuteCommandException, CancelException) as e:
             logger.error('Combination exception: %s' % e)
             comb_ok = False
         finally:
@@ -184,8 +206,7 @@ class glusterfs_eval_ovh(performing_actions):
     def config_host(self):
         logger.info("Starting configuring nodes")
         self.install_gluster(self.hosts)
-        if self.configs['parameters']['benchmarks'] == 'filebench':
-            self.install_filebench(self.hosts)
+        self.install_filebench(self.hosts)
         logger.info("Finish configuring nodes")
 
     def setup_env(self):
@@ -205,7 +226,7 @@ class glusterfs_eval_ovh(performing_actions):
             cluster = node['region']
             self.clusters[cluster] = [node] + self.clusters.get(cluster, list())
         for _, nodes in self.clusters.items():
-            self.data_nodes += nodes[0: max(self.normalized_parameters['n_gluster_per_dc'])]
+            self.data_nodes += nodes[0: max(self.normalized_parameters['n_nodes_per_dc'])]
         self.data_hosts = [node['ipAddresses'][0]['ip'] for node in self.data_nodes]
 
         cmd = 'mkdir -p /tmp/glusterd'
@@ -229,7 +250,7 @@ class glusterfs_eval_ovh(performing_actions):
         return node_ids_file
 
     def create_configs(self):
-        n_nodes_per_cluster = max(self.normalized_parameters['n_gluster_per_dc'])
+        n_nodes_per_cluster = max(self.normalized_parameters['n_nodes_per_dc'])
 
         # create standard cluster information to make reservation on OVHCloud, this info using by OVH provisioner
         clusters = list()
@@ -257,7 +278,7 @@ class glusterfs_eval_ovh(performing_actions):
                         gluster DCs: %s
                         n_gluster_per_dc: %s''' % (
                                                     len(self.configs['exp_env']['clusters']),
-                                                    max(self.normalized_parameters['n_gluster_per_dc'])
+                                                    max(self.normalized_parameters['n_nodes_per_dc'])
                                                     )
                     )
 
