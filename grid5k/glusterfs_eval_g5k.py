@@ -3,18 +3,14 @@ import random
 from cloudal.utils import get_logger, execute_cmd, parse_config_file, ExecuteCommandException
 from cloudal.action import performing_actions_g5k
 from cloudal.provisioner import g5k_provisioner
-from cloudal.configurator import packages_configurator
+from cloudal.configurator import packages_configurator, CancelException
 from cloudal.experimenter import is_job_alive, get_results, define_parameters, create_paramsweeper
+
 from execo_engine import slugify
 from execo_g5k import oardel
 
 
 logger = get_logger()
-
-
-class CancelCombException(Exception):
-    pass
-
 
 class glusterfs_eval_g5k(performing_actions_g5k):
     def __init__(self, **kwargs):
@@ -31,16 +27,15 @@ class glusterfs_eval_g5k(performing_actions_g5k):
                     remote_result_files=['/tmp/results/*'],
                     local_result_dir=self.configs['exp_env']['results_dir'])
 
-    def run_filebench(self, gluster_hosts, duration, n_client):
+    def run_mailserver(self, gluster_hosts, duration, n_client):
         if n_client == 100:
             n_hosts = 1
         else:
             n_hosts = n_client
-        hosts = random.sample(gluster_hosts, n_hosts)
-        logger.info('Running Filebench on hosts: %s ' % hosts)
 
-        logger.info("Dowloading Filebench configuration file")
-        cmd = "wget https://raw.githubusercontent.com/filebench/filebench/master/workloads/varmail.f -P /tmp/ -N"
+        hosts = random.sample(gluster_hosts, n_hosts)
+        logger.info('Dowloading Filebench configuration file')
+        cmd = 'wget https://raw.githubusercontent.com/filebench/filebench/master/workloads/varmail.f -P /tmp/ -N'
         execute_cmd(cmd, hosts)
 
         logger.info('Editing the configuration file')
@@ -49,6 +44,8 @@ class glusterfs_eval_g5k(performing_actions_g5k):
         cmd = 'sed -i "s/run 60/run %s/g" /tmp/varmail.f' % duration
         execute_cmd(cmd, hosts)
         cmd = 'sed -i "s/name=bigfileset/name=bigfileset-$(hostname)/g" /tmp/varmail.f'
+        execute_cmd(cmd, hosts)
+        cmd = 'sed -i "s/meandirwidth=1000000/meandirwidth=1000/g" /tmp/varmail.f'
         execute_cmd(cmd, hosts)
         if n_client != 100:
             cmd = 'sed -i "s/nthreads=16/nthreads=32/g" /tmp/varmail.f'
@@ -60,8 +57,9 @@ class glusterfs_eval_g5k(performing_actions_g5k):
         cmd = 'sync; echo 3 > /proc/sys/vm/drop_caches'
         execute_cmd(cmd, hosts)
 
-        logger.info('Starting filebench')
-        cmd = "setarch $(arch) -R filebench -f /tmp/varmail.f > /tmp/results/filebench_$(hostname)"
+        logger.info('hosts = %s' % hosts)
+        logger.info('Running filebench in %s second' % duration)
+        cmd = 'setarch $(arch) -R filebench -f /tmp/varmail.f > /tmp/results/filebench_$(hostname)'
         execute_cmd(cmd, hosts)
         return True, hosts
 
@@ -69,8 +67,8 @@ class glusterfs_eval_g5k(performing_actions_g5k):
         benchmark = comb['benchmarks']
         logger.info('--------------------------------------')
         logger.info("3. Starting benchmark: %s" % benchmark)
-        if benchmark == "filebench":
-            is_finished, hosts = self.run_filebench(glusterfs_hosts, comb['duration'], comb['n_client'])
+        if benchmark == "mailserver":
+            is_finished, hosts = self.run_mailserver(glusterfs_hosts, comb['duration'], comb['n_client'])
             return is_finished, hosts
 
     def deploy_glusterfs(self, indices, gluster_volume_name):
@@ -140,7 +138,7 @@ class glusterfs_eval_g5k(performing_actions_g5k):
 
             self.clean_exp_env(self.hosts, gluster_volume_name)
             # Get indices to select the number of n_gluster_per_dc from list of hosts
-            indices = random.sample(range(len(self.hosts)), comb['n_gluster_per_dc'])
+            indices = random.sample(range(len(self.hosts)), comb['n_nodes_per_dc'])
             glusterfs, hosts = self.deploy_glusterfs(indices, gluster_volume_name)
             if glusterfs:
                 is_finished, hosts = self.run_benchmark(comb, hosts)
@@ -148,8 +146,8 @@ class glusterfs_eval_g5k(performing_actions_g5k):
                     comb_ok = True
                     self.save_results(comb, hosts)
             else:
-                raise CancelCombException("Cannot deploy glusterfs")
-        except (ExecuteCommandException, CancelCombException) as e:
+                raise CancelException("Cannot deploy glusterfs")
+        except (ExecuteCommandException, CancelException) as e:
             logger.error('Combination exception: %s' % e)
             comb_ok = False
         finally:
@@ -208,8 +206,7 @@ class glusterfs_eval_g5k(performing_actions_g5k):
     def config_host(self):
         logger.info("Starting configuring nodes")
         self.install_gluster(self.hosts)
-        if self.configs['parameters']['benchmarks'] == 'filebench':
-            self.install_filebench(self.hosts)
+        self.install_filebench(self.hosts)
         logger.info("Finish configuring nodes")
 
     def setup_env(self):
@@ -228,29 +225,6 @@ class glusterfs_eval_g5k(performing_actions_g5k):
         oar_job_ids = provisioner.oar_result
         self.oar_result = provisioner.oar_result
 
-        # self.data_nodes = list()
-        # self.clusters = dict()
-        # for node in self.nodes:
-        #     cluster = node['region']
-        #     self.clusters[cluster] = [node] + self.clusters.get(cluster, list())
-        # for _, nodes in self.clusters.items():
-        #     self.data_nodes += nodes[0: max(self.normalized_parameters['n_gluster_per_dc'])]
-        # self.data_hosts = [node['ipAddresses'][0]['ip'] for node in self.data_nodes]
-
-        # cmd = 'mkdir -p /tmp/glusterd'
-        # execute_cmd(cmd, self.data_hosts)
-
-        # if self.args.attach_volume:
-        #     logger.info('Attaching external volumes to %s nodes' % len(self.data_nodes))
-        #     provisioner.attach_volume(nodes=self.data_nodes)
-
-        #     logger.info('Formatting the new external volumes')
-        #     cmd = '''disk=$(ls -lt /dev/ | grep '^b' | head -n 1 | awk {'print $NF'})
-        #            mkfs.ext4 -F /dev/$disk;
-        #            mount -t ext4 /dev/$disk /tmp/glusterd;
-        #            chmod 777 /tmp/glusterd'''
-        #     execute_cmd(cmd, self.data_hosts)
-
         if not self.args.no_config_host:
             self.config_host()
 
@@ -259,7 +233,7 @@ class glusterfs_eval_g5k(performing_actions_g5k):
         return oar_job_ids
 
     def create_configs(self):
-        n_nodes_per_cluster = max(self.normalized_parameters['n_gluster_per_dc'])
+        n_nodes_per_cluster = max(self.normalized_parameters['n_nodes_per_dc'])
 
         # create standard cluster information to make reservation on Grid'5000, this info using by G5k provisioner
         clusters = list()
@@ -284,7 +258,7 @@ class glusterfs_eval_g5k(performing_actions_g5k):
                         gluster DCs: %s
                         n_gluster_per_dc: %s''' % (
                                                     len(self.configs['exp_env']['clusters']),
-                                                    max(self.normalized_parameters['n_gluster_per_dc'])
+                                                    max(self.normalized_parameters['n_nodes_per_dc'])
                                                     )
                     )
 

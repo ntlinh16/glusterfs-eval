@@ -44,18 +44,14 @@ parameters:
     # the number of repetitions of each experiment
     iteration: [1..10]
 
-    latency: 0
-    latency_interval:
-    # latency_interval: logarithmic scale
-    benchmarks: filebench
+    # the information for the workload
+    benchmarks: ['mailserver', 'videoserver']
     duration: 600
+    n_client: [1,2,3]
 
     ### configuration of topology on 1 site (or Grid5k cluster)
     # the number of GlusterFS nodes
-    n_gluster_per_dc: [3,5,7,9,12]
-    # n_concurrent_client: [16, 32, 64, 96]
-    n_client: [1,2,3]
-    
+    n_nodes_per_dc: [3,5,7,9,12]
 
 #############################################
 #                                           #
