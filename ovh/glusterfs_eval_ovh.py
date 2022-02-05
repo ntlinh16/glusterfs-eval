@@ -23,7 +23,7 @@ class glusterfs_eval_ovh(performing_actions):
         self.args_parser.add_argument("--attach_volume", dest="attach_volume",
                                       help="attach an external volume to every data node",
                                       action="store_true")
-        self.args_parser.add_argument("--no-config-host", dest="no_config_host",
+        self.args_parser.add_argument("--no_config_host", dest="no_config_host",
                                       help="do not run the functions to config the hosts",
                                       action="store_true")
 
@@ -143,10 +143,10 @@ class glusterfs_eval_ovh(performing_actions):
             self.clean_exp_env(self.data_hosts, gluster_volume_name)
             glusterfs = self.deploy_glusterfs(self.data_hosts, gluster_volume_name)
             if glusterfs:
-                is_finished = self.run_benchmark(comb, self.data_hosts)
+                is_finished, hosts = self.run_benchmark(comb, self.data_hosts)
                 if is_finished:
+                    self.save_results(comb, hosts)
                     comb_ok = True
-                    self.save_results(comb, self.data_hosts)
             else:
                 raise CancelException("Cannot deploy glusterfs")
         except (ExecuteCommandException, CancelException) as e:

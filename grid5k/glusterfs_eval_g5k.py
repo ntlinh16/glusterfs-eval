@@ -15,7 +15,7 @@ logger = get_logger()
 class glusterfs_eval_g5k(performing_actions_g5k):
     def __init__(self, **kwargs):
         super(glusterfs_eval_g5k, self).__init__()
-        self.args_parser.add_argument("--no-config-host", dest="no_config_host",
+        self.args_parser.add_argument("--no_config_host", dest="no_config_host",
                                       help="do not run the functions to config the hosts",
                                       action="store_true")
 
