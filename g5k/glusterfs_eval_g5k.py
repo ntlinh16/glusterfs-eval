@@ -1,13 +1,14 @@
 import traceback
 import random
 
-from cloudal.utils import get_logger, execute_cmd, parse_config_file, ExecuteCommandException
+
 from cloudal.action import performing_actions_g5k
-from cloudal.provisioner import g5k_provisioner
 from cloudal.configurator import filebench_configurator, glusterfs_configurator, CancelException
 from cloudal.experimenter import is_job_alive, get_results, define_parameters, create_paramsweeper
+from cloudal.provisioner import g5k_provisioner
+from cloudal.utils import get_logger, execute_cmd, parse_config_file, ExecuteCommandException
 
-from execo_engine import slugify
+from - import slugify
 from execo_g5k import oardel
 
 
@@ -148,16 +149,8 @@ class glusterfs_eval_g5k(performing_actions_g5k):
         logger.info("FINISH SETTING THE EXPERIMENT ENVIRONMENT\n")
         return oar_job_ids
 
-    def create_configs(self):
-        n_nodes_per_cluster = max(self.normalized_parameters['n_nodes_per_dc'])
-
-        # create standard cluster information to make reservation on Grid'5000, this info using by G5k provisioner
-        clusters = list()
-        for cluster in self.configs['exp_env']['clusters']:
-            clusters.append({'cluster': cluster, 'n_nodes': n_nodes_per_cluster})
-        self.configs['clusters'] = clusters
-
-    def run(self):
+    
+    def create_combination_queue(self):
         logger.debug('Parse and convert configs for OVH provisioner')
         self.configs = parse_config_file(self.args.config_file_path)
 
@@ -168,7 +161,12 @@ class glusterfs_eval_g5k(performing_actions_g5k):
         self.normalized_parameters = define_parameters(self.configs['parameters'])
 
         logger.debug('Normalize the given configs')
-        self.create_configs()
+        n_nodes_per_cluster = max(self.normalized_parameters['n_nodes_per_dc'])
+        # create standard cluster information to make reservation on Grid'5000, this info using by G5k provisioner
+        clusters = list()
+        for cluster in self.configs['exp_env']['clusters']:
+            clusters.append({'cluster': cluster, 'n_nodes': n_nodes_per_cluster})
+        self.configs['clusters'] = clusters
 
         logger.info('''Your largest topology:
                         GlusterFS DCs: %s
@@ -181,7 +179,11 @@ class glusterfs_eval_g5k(performing_actions_g5k):
         logger.info('Creating the combination list')
         sweeper = create_paramsweeper(result_dir=self.configs['exp_env']['results_dir'],
                                       parameters=self.normalized_parameters)
-        
+        return sweeper
+
+    def run(self):
+        sweeper = self.create_combination_queue()
+
         gluster_volume_name = 'gluster_volume'
         gluster_mountpoint = '/mnt/glusterd-$(hostname)'
         oar_job_ids = None
@@ -194,8 +196,10 @@ class glusterfs_eval_g5k(performing_actions_g5k):
                                         sweeper=sweeper,
                                         gluster_mountpoint=gluster_mountpoint,
                                         gluster_volume_name=gluster_volume_name)
-
+            logger.info('==================================================')
+            logger.info('Checking whether all provisioned nodes are running')
             if not is_job_alive(oar_job_ids):
+                logger.info('Deleting old provisioned nodes')
                 oardel(oar_job_ids)
                 oar_job_ids = None
         logger.info("Finish the experiment!!!")

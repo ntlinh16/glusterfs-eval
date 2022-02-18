@@ -1,11 +1,11 @@
 import traceback
 import random
 
-from cloudal.utils import get_logger, execute_cmd, parse_config_file, ExecuteCommandException
 from cloudal.action import performing_actions
-from cloudal.provisioner import ovh_provisioner
 from cloudal.configurator import filebench_configurator, glusterfs_configurator, CancelException
 from cloudal.experimenter import create_paramsweeper, define_parameters, get_results, is_node_active, delete_ovh_nodes
+from cloudal.utils import get_logger, execute_cmd, parse_config_file, ExecuteCommandException
+from cloudal.provisioner import ovh_provisioner
 
 from execo_engine import slugify
 
@@ -23,6 +23,9 @@ class glusterfs_eval_ovh(performing_actions):
                                       action="store_true")
         self.args_parser.add_argument("--no_config_host", dest="no_config_host",
                                       help="do not run the functions to config the hosts",
+                                      action="store_true")
+        self.args_parser.add_argument("-k", dest="keep_nodes",
+                                      help="keep the provisioned nodes after finishing the experiments",
                                       action="store_true")
 
     def save_results(self, comb, hosts):
@@ -162,9 +165,18 @@ class glusterfs_eval_ovh(performing_actions):
         logger.info("FINISH SETTING THE EXPERIMENT ENVIRONMENT\n")
         return node_ids, driver
 
-    def create_configs(self):
-        n_nodes_per_cluster = max(self.normalized_parameters['n_nodes_per_dc'])
 
+    def create_combination_queue(self):
+        logger.debug('Parse and convert configs for OVH provisioner')
+        self.configs = parse_config_file(self.args.config_file_path)
+        # Add the number of GlusterFS DC as a parameter
+        self.configs['parameters']['n_dc'] = len(self.configs['exp_env']['clusters'])
+
+        logger.debug('Normalize the parameter space')
+        self.normalized_parameters = define_parameters(self.configs['parameters'])
+
+        logger.debug('Normalize the given configs')
+        n_nodes_per_cluster = max(self.normalized_parameters['n_nodes_per_dc'])
         # create standard cluster information to make reservation on OVHCloud, this info using by OVH provisioner
         clusters = list()
         for cluster in self.configs['exp_env']['clusters']:
@@ -174,18 +186,6 @@ class glusterfs_eval_ovh(performing_actions):
                             'flexible_instance': self.configs['flexible_instance'],
                             'image': self.configs['image']})
         self.configs['clusters'] = clusters
-
-    def run(self):
-        logger.debug('Parse and convert configs for OVH provisioner')
-        self.configs = parse_config_file(self.args.config_file_path)
-        # Add the number of gluster DC as a parameter
-        self.configs['parameters']['n_dc'] = len(self.configs['exp_env']['clusters'])
-
-        logger.debug('Normalize the parameter space')
-        self.normalized_parameters = define_parameters(self.configs['parameters'])
-
-        logger.debug('Normalize the given configs')
-        self.create_configs()
 
         logger.info('''Your largest topology:
                         GlusterFS DCs: %s
@@ -198,6 +198,10 @@ class glusterfs_eval_ovh(performing_actions):
         logger.info('Creating the combination list')
         sweeper = create_paramsweeper(result_dir=self.configs['exp_env']['results_dir'],
                                       parameters=self.normalized_parameters)
+        return sweeper
+
+    def run(self):
+        sweeper = self.create_combination_queue()
 
         gluster_volume_name = 'gluster_volume'
         gluster_mountpoint = '/mnt/glusterd-$(hostname)'
@@ -213,18 +217,23 @@ class glusterfs_eval_ovh(performing_actions):
             logger.info('==================================================')
             logger.info('Checking whether all provisioned nodes are running')
             is_nodes_alive, _ = is_node_active(node_ids=node_ids, 
-                                               project_id=self.configs['project_id'], 
-                                               driver=driver)
+                                            project_id=self.configs['project_id'], 
+                                            driver=driver)
             if not is_nodes_alive:
                 logger.info('Deleting old provisioned nodes')
                 delete_ovh_nodes(node_ids=node_ids,
                                 project_id=self.configs['project_id'], 
                                 driver=driver)
                 node_ids = None
+
         logger.info('Finish the experiment!!!')
-        delete_ovh_nodes(node_ids=node_ids,
-                                project_id=self.configs['project_id'], 
-                                driver=driver)
+        logger.info('The provisioned nodes keep running')
+        if not self.args.keep_nodes:
+            logger.info('Deleting provisioned nodes after finishing the experiment')
+            delete_ovh_nodes(node_ids=node_ids,
+                        project_id=self.configs['project_id'], 
+                        driver=driver)
+
 
 if __name__ == "__main__":
     logger.info("Init engine in %s" % __file__)
