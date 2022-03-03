@@ -1,8 +1,9 @@
 import traceback
 import random
+import math
 
 from cloudal.action import performing_actions
-from cloudal.configurator import filebench_configurator, glusterfs_configurator, CancelException
+from cloudal.configurator import packages_configurator, filebench_configurator, glusterfs_configurator, CancelException
 from cloudal.experimenter import create_paramsweeper, define_parameters, get_results, is_node_active, delete_ovh_nodes
 from cloudal.utils import get_logger, execute_cmd, parse_config_file, ExecuteCommandException
 from cloudal.provisioner import ovh_provisioner
@@ -46,6 +47,51 @@ class glusterfs_eval_ovh(performing_actions):
         if benchmark == 'mailserver':
             is_finished = configurator.run_mailserver(filebench_hosts, gluster_mountpoint, comb['duration'], comb['n_threads'])
             return is_finished, filebench_hosts
+    
+    def reset_latency(self):
+        """Delete the Limitation of latency in host"""
+        logger.info("--Remove network latency on hosts")
+        cmd = "tcdel ens3 --all"
+        execute_cmd(cmd, self.hosts)
+
+    def get_latency(self, hostA, hostB):
+        cmd = "ping -c 4 %s" % hostB
+        _, r = execute_cmd(cmd, hostA)
+        tokens = r.processes[0].stdout.strip().split('\r\n')[3].split('time=')
+        if len(tokens) == 2:
+            return  math.ceil(float(tokens[1].split()[0]))
+        raise CancelException("Cannot get latency between nodes")
+    
+    def set_latency(self, latency):
+        """Limit the latency in host"""
+        logger.info('---------------------------------------')
+        logger.info('Setting network latency = %s on hosts' % latency)
+        clusters = dict()
+        for node in self.nodes:
+            cluster = node['name'].split('-')[1]
+            ip = node['ipAddresses'][0]['ip']
+            clusters[cluster] = clusters.get(cluster, list()) + [ip]
+        logger.info('clusters = %s' % clusters)
+        
+        
+        for cur_cluster, cur_ips in clusters.items():
+            other_clusters = {cluster: hosts for cluster, hosts in clusters.items() if cluster != cur_cluster}
+
+            for other_cluster, other_ips in other_clusters.items():
+                real_latency = self.get_latency(cur_ips[0], other_ips[0])
+                logger.info('latency between %s and %s is: %s' % (cur_cluster, other_cluster, real_latency))
+                if real_latency < latency:
+                    latency_add = (latency - real_latency)/2
+                    logger.info('Add %s to current latency from %s cluster to %s:' % (latency_add, cur_cluster, other_cluster))
+                    for ip in other_ips:
+                        cmd = "tcset ens3 --delay %s --network %s" % (latency_add, ip)
+                        
+                        logger.info('%s --->  %s, cmd = %s' % (cur_ips, ip, cmd))
+                        execute_cmd(cmd, cur_ips)
+                else:
+                    self.reset_latency()
+                    return False
+        return True
 
     def deploy_glusterfs(self, indices, gluster_mountpoint, gluster_volume_name):
         logger.info('--------------------------------------')
@@ -84,7 +130,7 @@ class glusterfs_eval_ovh(performing_actions):
             execute_cmd(cmd, hosts)
 
     def run_exp_workflow(self, comb, sweeper, gluster_mountpoint, gluster_volume_name):
-        comb_ok = False
+        comb_ok = 'cancel'
         try:
             logger.info('=======================================')
             logger.info('Performing combination: ' + slugify(comb))
@@ -94,33 +140,78 @@ class glusterfs_eval_ovh(performing_actions):
             indices = random.sample(range(len(self.data_hosts)), comb['n_nodes_per_dc'] * comb['n_dc'])
             glusterfs, hosts = self.deploy_glusterfs(indices, gluster_mountpoint, gluster_volume_name)
             if glusterfs:
+                if len(self.configs['exp_env']['clusters']) > 1 and comb['latency'] != 0:
+                    is_latency = self.set_latency(comb["latency"])
+                    if not is_latency:
+                        comb_ok = 'skip'
+                        sweeper.skip(comb)
+                        return sweeper  
                 is_finished, result_hosts = self.run_benchmark(comb, hosts, gluster_mountpoint)
+                if len(self.configs['exp_env']['clusters']) > 1 and comb['latency'] != 0:
+                    self.reset_latency()
                 if is_finished:
                     self.save_results(comb, result_hosts)
-                    comb_ok = True
+                    comb_ok = 'done'
             else:
                 raise CancelException("Cannot deploy glusterfs")
         except (ExecuteCommandException, CancelException) as e:
             logger.error('Combination exception: %s' % e)
-            comb_ok = False
+            comb_ok = 'cancel'
         finally:
-            if comb_ok:
+            if comb_ok == 'done':
                 sweeper.done(comb)
                 logger.info('Finish combination: %s' % slugify(comb))
-            else:
+            elif comb_ok == 'cancel':
                 sweeper.cancel(comb)
                 logger.warning(slugify(comb) + ' is canceled')
+            else:
+                sweeper.skip(comb)
+                logger.warning(slugify(comb) + ' is skipped due to real_latency is higher than %s' % comb['latency'])
             logger.info('%s combinations remaining\n' % len(sweeper.get_remaining()))
         return sweeper
 
     def config_host(self):
         logger.info("Starting configuring nodes")
+        logger.info("Installing tcconfig")
+        configurator = packages_configurator()
+        configurator.install_packages(['python3-pip'], self.hosts)  
+        cmd = "pip3 install tcconfig"
+        execute_cmd(cmd, self.hosts)
+
         configurator = filebench_configurator()
         configurator.install_filebench(self.hosts)
         
         configurator = glusterfs_configurator()
         configurator.install_glusterfs(self.hosts)
         logger.info("Finish configuring nodes")
+    
+    def calculate_latency_range(self):
+        latency_interval = self.configs["parameters"]["latency_interval"]
+        if latency_interval == "logarithmic scale":
+            start, end = self.configs["parameters"]["latency"]
+            latency = [start, end]
+            log_start = int(math.ceil(math.log(start)))
+            log_end = int(math.ceil(math.log(end)))
+            for i in range(log_start, log_end):
+                val = int(math.exp(i))
+                if val < end:
+                    latency.append(int(math.exp(i)))
+                val = int(math.exp(i + 0.5))
+                if val < end:
+                    latency.append(int(math.exp(i + 0.5)))
+        elif isinstance(latency_interval, int):
+            start, end = self.configs["parameters"]["latency"]
+            latency = [start]
+            next_latency = start + latency_interval
+            while next_latency < end:
+                latency.append(next_latency)
+                next_latency += latency_interval
+            latency.append(end)
+        else:
+            latency = self.configs["parameters"]["latency"]
+        del self.configs["parameters"]["latency_interval"]
+        self.configs["parameters"]["latency"] = list(set(latency))
+        logger.info('latency = %s' % self.configs["parameters"]["latency"])
 
     def setup_env(self):
         logger.info("STARTING SETTING THE EXPERIMENT ENVIRONMENT")

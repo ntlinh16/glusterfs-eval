@@ -91,7 +91,6 @@ class glusterfs_eval_g5k(performing_actions_g5k):
                 else:
                     self.reset_latency()
                     return False
-
         return True
 
     def deploy_glusterfs(self, indices, gluster_mountpoint, gluster_volume_name):
@@ -123,9 +122,6 @@ class glusterfs_eval_g5k(performing_actions_g5k):
                     execute_cmd(cmd, host)
 
             logger.info('Delete all volumes on %s glusterfs nodes' % len(hosts))
-            # logger.info('Starting volumes on hosts')
-            # cmd = 'gluster --mode=script volume start %s' % gluster_volume_name
-            # execute_cmd(cmd, hosts[0])
             cmd = 'gluster volume list'
             _,r = execute_cmd(cmd, hosts[0])
             if gluster_volume_name in r.processes[0].stdout.strip():
@@ -139,7 +135,7 @@ class glusterfs_eval_g5k(performing_actions_g5k):
     def run_exp_workflow(self, comb, sweeper, gluster_mountpoint, gluster_volume_name):
         comb_ok = 'cancel'
         try:
-            logger.info('=======================================')
+            logger.info('=================================================')
             logger.info('Performing combination: ' + slugify(comb))
 
             self.clean_exp_env(self.ip_hosts, gluster_mountpoint, gluster_volume_name)
@@ -147,14 +143,14 @@ class glusterfs_eval_g5k(performing_actions_g5k):
             indices = random.sample(range(len(self.ip_hosts)), comb['n_nodes_per_dc'] * comb['n_dc'])
             glusterfs, ip_hosts = self.deploy_glusterfs(indices, gluster_mountpoint, gluster_volume_name)
             if glusterfs:
-                if len(self.configs['exp_env']['clusters']) > 1:
+                if len(self.configs['exp_env']['clusters']) > 1 and comb['latency'] != 0:
                     is_latency = self.set_latency(comb["latency"])
                     if not is_latency:
                         comb_ok = 'skip'
                         sweeper.skip(comb)
                         return sweeper  
                 is_finished, result_hosts = self.run_benchmark(comb, ip_hosts, gluster_mountpoint)
-                if len(self.configs['exp_env']['clusters']) > 1:
+                if len(self.configs['exp_env']['clusters']) > 1 and comb['latency'] != 0:
                     self.reset_latency()
                 if is_finished:
                     self.save_results(comb, result_hosts)
@@ -192,8 +188,8 @@ class glusterfs_eval_g5k(performing_actions_g5k):
 
     def calculate_latency_range(self):
         latency_interval = self.configs["parameters"]["latency_interval"]
-        start, end = self.configs["parameters"]["latency"]
         if latency_interval == "logarithmic scale":
+            start, end = self.configs["parameters"]["latency"]
             latency = [start, end]
             log_start = int(math.ceil(math.log(start)))
             log_end = int(math.ceil(math.log(end)))
@@ -205,6 +201,7 @@ class glusterfs_eval_g5k(performing_actions_g5k):
                 if val < end:
                     latency.append(int(math.exp(i + 0.5)))
         elif isinstance(latency_interval, int):
+            start, end = self.configs["parameters"]["latency"]
             latency = [start]
             next_latency = start + latency_interval
             while next_latency < end:
@@ -212,8 +209,7 @@ class glusterfs_eval_g5k(performing_actions_g5k):
                 next_latency += latency_interval
             latency.append(end)
         else:
-            logger.info('Please give a valid latency_interval ("logarithmic scale" or a number)')
-            exit()
+            latency = self.configs["parameters"]["latency"]
         del self.configs["parameters"]["latency_interval"]
         self.configs["parameters"]["latency"] = list(set(latency))
         logger.info('latency = %s' % self.configs["parameters"]["latency"])
